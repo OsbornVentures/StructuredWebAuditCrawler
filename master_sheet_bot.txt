@@ -1,0 +1,933 @@
+****************************************
+FILE: C:/Users/User/Desktop/SiteAudits\audit.py
+****************************************
+# structuredweb_auditor/audit.py
+
+import sys
+import requests
+from urllib.parse import urlparse
+from bs4 import BeautifulSoup
+
+from core.audit_runner import audit_page
+from core.site_report import write_combined_report
+
+def resolve_url(raw: str) -> str:
+    if not raw.startswith(("http://", "https://")):
+        raw = "https://" + raw
+    parsed = urlparse(raw)
+    if not parsed.netloc:
+        raise ValueError("Invalid URL — missing domain.")
+    return raw.rstrip("/") + "/" if parsed.path in ["", "/"] else raw
+
+def parse_sitemap(sitemap_url: str) -> list:
+    try:
+        resp = requests.get(sitemap_url, timeout=10)
+        soup = BeautifulSoup(resp.content, "xml")
+        return [loc.text.strip() for loc in soup.find_all("loc")]
+    except Exception as e:
+        print(f"❌ Failed to load sitemap: {str(e)}")
+        return []
+
+def parse_mesh() -> list:
+    mesh_url = "https://structuredweb.org/mesh.json"
+    print(f"\n📡 Auto-loading mesh from: {mesh_url}")
+
+    try:
+        resp = requests.get(mesh_url, timeout=10)
+        data = resp.json()
+    except Exception as e:
+        print(f"❌ Failed to fetch or parse mesh.json: {str(e)}")
+        return []
+
+    sitemaps = set()
+    dist = data.get("distribution", [])
+    if not isinstance(dist, list):
+        print("⚠️ 'distribution' is missing or malformed.")
+        return []
+
+    for item in dist:
+        content_url = item.get("contentUrl", "") if isinstance(item, dict) else ""
+        if "/verify.json" in content_url:
+            base_url = content_url.rsplit("/verify.json", 1)[0]
+            sitemap_url = base_url + "/sitemap.xml"
+            sitemaps.add(sitemap_url)
+
+    return sorted(sitemaps)
+
+def main():
+    print("Welcome to Structured Web Auditor\n")
+    print("What would you like to audit?")
+    print("[1] Single URL")
+    print("[2] Full sitemap of a domain")
+    print("[3] Entire mesh (all pages in mesh.json sitemaps)\n")
+
+    choice = input("Enter choice [1–3]: ").strip()
+
+    if choice == "1":
+        raw_url = input("Enter the full or partial URL to audit: ").strip()
+        try:
+            url = resolve_url(raw_url)
+        except ValueError as ve:
+            print(f"\n❌ {ve}")
+            sys.exit(1)
+
+        print(f"\n📡 Auditing {url}...\n")
+        result = audit_page(url)
+        print_summary(result)
+
+    elif choice == "2":
+        domain = input("Enter domain (e.g., example.com): ").strip().lower()
+        sitemap_url = f"https://{domain}/sitemap.xml"
+
+        print(f"\n📂 Fetching sitemap: {sitemap_url}")
+        urls = parse_sitemap(sitemap_url)
+        if not urls:
+            print("⚠️ No URLs found in sitemap.")
+            sys.exit(1)
+
+        print(f"🔍 Found {len(urls)} URLs. Beginning audit...\n")
+        page_reports = []
+        for i, url in enumerate(urls):
+            print(f"  [{i+1}/{len(urls)}] Auditing: {url}")
+            result = audit_page(url)
+            page_reports.append(result)
+
+        write_combined_report(domain, page_reports)
+        print("✅ Domain-wide audit complete.")
+
+    elif choice == "3":
+        sitemaps = parse_mesh()
+        if not sitemaps:
+            print("⚠️ No sitemaps found in mesh.")
+            sys.exit(1)
+
+        all_urls = []
+        for sm in sitemaps:
+            print(f"\n📂 Parsing sitemap: {sm}")
+            urls = parse_sitemap(sm)
+            if urls:
+                all_urls.extend(urls)
+
+        print(f"\n🔍 Total URLs found across mesh: {len(all_urls)}\n")
+        page_reports = []
+        for i, url in enumerate(all_urls):
+            print(f"  [{i+1}/{len(all_urls)}] Auditing: {url}")
+            result = audit_page(url)
+            page_reports.append(result)
+
+        write_combined_report("structuredweb.org", page_reports)
+        print("✅ Mesh-wide audit complete.")
+
+    else:
+        print("Invalid choice.")
+        sys.exit(1)
+
+def print_summary(result: dict):
+    print("=" * 60)
+    print(f"🧾 Audit Complete: {result['url']}")
+    print(f"Status: {result['status']}")
+    print(f"Load time: {result.get('load_time_ms', 'n/a')} ms")
+    print(f"Backlink required: {result.get('backlink_required', 'n/a')}")
+    print(f"Backlink found: {result.get('backlink_found', 'n/a')}")
+    print(f"Structured Data: {result.get('structured_data_present', False)}")
+    print(f"Alignment Score: {result.get('alignment_percent', 0)}%")
+    print("\nViolations:")
+    if result.get("violations"):
+        for v in result["violations"]:
+            print(f" - {v}")
+    else:
+        print("None ✅")
+    print("=" * 60)
+
+if __name__ == "__main__":
+    main()
+
+
+****************************************
+FILE: C:/Users/User/Desktop/SiteAudits\config.py
+****************************************
+# structuredweb_auditor/config.py
+
+# Paths
+OUTPUT_DIR = "outputs"
+PAGES_DIR = f"{OUTPUT_DIR}/pages"
+SITES_DIR = f"{OUTPUT_DIR}/sites"
+RAW_SCHEMA_DIR = f"{PAGES_DIR}/raw_schema"
+
+# User-Agent
+USER_AGENT = "StructuredWebAuditor/1.0"
+
+# Backlink enforcement
+REQUIRED_BACKLINK_PATHS = ["/", "/verify.html", "/verify.json"]
+TRUST_URL = "https://structuredweb.org/verify"
+
+# Scoring thresholds
+ALIGNMENT_THRESHOLD = 70  # percent
+HOMEPAGE_MAX_LOAD_MS = 1000  # ms
+
+# Audit Order (for future sitemap/mesh sorting)
+AUDIT_ORDER = [
+    "/robots.txt",
+    "/ai.json", "/ai.html",
+    "/verify.json",
+    "/mesh.json",
+    "/manifest.json",
+    "/assistant_context.json",
+    "/sitemap.xml",
+    "/genesis.txt", "/humans.txt"  # bonus only
+]
+
+
+****************************************
+FILE: C:/Users/User/Desktop/SiteAudits\core\audit_runner.py
+****************************************
+# structuredweb_auditor/core/audit_runner.py
+
+import os
+import requests
+from urllib.parse import urlparse
+from typing import Tuple
+
+from rules.performance import audit_performance
+from rules.schema import audit_schema
+from rules.trust import audit_backlink
+from rules.zero_trust import audit_zero_trust
+from rules.semantic_alignment import audit_semantic_alignment
+from core.report_writer import write_page_report, write_raw_schema
+
+OUTPUT_DIR = "outputs/pages"
+RAW_SCHEMA_DIR = "outputs/pages/raw_schema"
+
+def fetch_page(url: str) -> Tuple[str, str]:
+    headers = {"User-Agent": "StructuredWebAuditor/1.0"}
+    response = requests.get(url, headers=headers, timeout=10)
+    return response.text, response.url
+
+def sanitize_slug(url: str) -> str:
+    parsed = urlparse(url)
+    slug = parsed.path.strip("/").replace("/", "-") or "home"
+    return f"{parsed.netloc.replace('.', '_')}-{slug}"
+
+def ensure_output_dirs():
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(RAW_SCHEMA_DIR, exist_ok=True)
+
+def audit_page(url: str) -> dict:
+    try:
+        html_content, final_url = fetch_page(url)
+    except Exception as e:
+        return {
+            "url": url,
+            "status": "FAIL",
+            "violations": [f"Failed to fetch URL: {str(e)}"]
+        }
+
+    # Run audits
+    perf = audit_performance(final_url, html_content)
+    schema = audit_schema(final_url, html_content)
+    trust = audit_backlink(final_url, html_content)
+    zero = audit_zero_trust(final_url, html_content)
+    alignment = audit_semantic_alignment(
+        html=html_content,
+        json_ld_blocks=schema.get("json_ld_data", []),
+        microdata_items=schema.get("microdata_data", [])
+    )
+
+    slug = sanitize_slug(final_url)
+    ensure_output_dirs()
+
+    all_pass = all([
+        perf["status"] == "PASS",
+        schema["status"] == "PASS",
+        trust["status"] == "PASS",
+        zero["status"] == "PASS"
+    ])
+
+    is_json_page = final_url.lower().endswith(".json")
+    structured_ok = schema.get("has_json_ld", False)
+
+    summary = {
+    "url": final_url,
+    "status": "PASS" if all_pass else "FAIL",
+    "load_time_ms": perf.get("load_time_ms"),
+    "backlink_required": trust.get("required"),
+    "backlink_found": trust.get("backlink_found"),
+    "backlink_score": trust.get("backlink_score", 0),
+    "alignment_percent": alignment.get("alignment_percent", 0),
+    "structured_data_present": schema.get("has_json_ld", False),
+    "violations": (
+        perf.get("violations", [])
+        + schema.get("violations", [])
+        + trust.get("violations", [])
+        + zero.get("violations", [])
+        + [f"Missing structured keyword: {term}" for term in alignment.get("missing_terms", [])]
+    )
+}
+
+
+    write_page_report(slug, final_url, summary, schema, alignment, debug_logs=zero.get("debug_log", []))
+    write_raw_schema(slug, schema.get("json_ld_data", []))
+
+    return summary
+
+
+****************************************
+FILE: C:/Users/User/Desktop/SiteAudits\core\meta_score.py
+****************************************
+# structuredweb_auditor/core/meta_score.py
+
+from typing import List, Dict
+
+def compute_page_score(report: Dict) -> int:
+    score = 100
+
+    url = report.get("url", "").lower()
+    path = "/" + url.split("/", 3)[-1].split("?", 1)[0].split("#", 1)[0]
+    if path in ["/", "/index.html"]:
+        path = "/"
+
+    backlink_scored_paths = {"/", "/verify.html", "/verify.json"}
+
+    # 25% — Structured Data (mandatory)
+    if not report.get("structured_data_present", False):
+        score -= 25
+
+    # 20% — Backlink score (only on root and verify paths)
+    if path in backlink_scored_paths:
+        backlink_score = report.get("backlink_score")
+        if isinstance(backlink_score, int):
+            max_backlink_per_page = 2
+            penalty = (max_backlink_per_page - backlink_score) * 10
+            score -= penalty
+
+    # 25% — Zero Trust (cookies, popups, autoloaded JS)
+    if any(
+        "cookie" in v.lower() or "popup" in v.lower() or "autoloaded js" in v.lower()
+        for v in report.get("violations", [])
+    ):
+        score -= 25
+
+    # 10% — Load Time (only homepage punished if >1s)
+    if path == "/" and report.get("load_time_ms", 0) > 1000:
+        score -= 10
+
+    # 10% — Semantic Alignment (proportional penalty below 70%)
+    alignment = report.get("alignment_percent", 100)
+    if alignment < 70:
+        score -= round((70 - alignment) * (10 / 70), 2)
+
+    # 5% — Overall FAIL
+    if report.get("status") != "PASS":
+        score -= 5
+
+    return max(int(score), 0)
+
+
+def compute_sitewide_score(page_reports: List[Dict]) -> Dict:
+    scores = [compute_page_score(report) for report in page_reports]
+    average = round(sum(scores) / len(scores), 2) if scores else 0
+    alignment_values = [r.get("alignment_percent", 0) for r in page_reports]
+    average_alignment = round(sum(alignment_values) / len(alignment_values), 2) if alignment_values else 0
+
+    return {
+        "page_scores": scores,
+        "average_score": average,
+        "average_alignment": average_alignment,
+        "pages_passed": sum(1 for r in page_reports if r.get("status") == "PASS"),
+        "pages_failed": sum(1 for r in page_reports if r.get("status") != "PASS"),
+        "total_pages": len(scores)
+    }
+
+
+****************************************
+FILE: C:/Users/User/Desktop/SiteAudits\core\report_writer.py
+****************************************
+# core/report_writer.py
+
+import os
+import json
+from typing import Dict, List
+
+OUTPUT_DIR = "outputs/pages"
+RAW_SCHEMA_DIR = "outputs/pages/raw_schema"
+
+def write_page_report(slug: str, final_url: str, summary: Dict, schema: Dict, alignment: Dict, debug_logs: List[str] = None):
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(RAW_SCHEMA_DIR, exist_ok=True)
+
+    report_path = os.path.join(OUTPUT_DIR, f"{slug}.txt")
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(f"URL: {final_url}\n")
+        f.write("Raw JSON-LD:\n")
+        f.write(json.dumps(schema["json_ld_data"], indent=2, ensure_ascii=False))
+
+        f.write("\n\n--- AUDIT SUMMARY ---\n")
+        f.write(f"Status: {summary['status']}\n")
+        f.write(f"Load time: {summary['load_time_ms']} ms\n")
+        f.write(f"Backlink required: {summary['backlink_required']}\n")
+        f.write(f"Backlink found: {summary['backlink_found']}\n")
+        f.write(f"Alignment %: {summary['alignment_percent']}%\n")
+        f.write(f"Structured data present (JSON-LD): {summary['structured_data_present']}\n\n")
+
+        f.write("Violations:\n")
+        if summary["violations"]:
+            for v in summary["violations"]:
+                f.write(f"- {v}\n")
+        else:
+            f.write("None\n")
+
+        f.write("\nSemantic Terms (shared):\n")
+        for term in alignment.get("shared_terms", []):
+            f.write(f"✔ {term}\n")
+
+        f.write("\nSemantic Terms (missing):\n")
+        for term in alignment.get("missing_terms", []):
+            f.write(f"✘ {term}\n")
+
+        f.write("\nRaw Microdata:\n")
+        for md in schema["microdata_data"]:
+            f.write(md.get("html", "") + "\n")
+
+        if debug_logs:
+            f.write("\n--- Zero Trust Debug ---\n")
+            for line in debug_logs:
+                f.write(line + "\n")
+
+def write_raw_schema(slug: str, json_ld_data: List[Dict]):
+    os.makedirs(RAW_SCHEMA_DIR, exist_ok=True)
+    json_path = os.path.join(RAW_SCHEMA_DIR, f"{slug}.json")
+    with open(json_path, "w", encoding="utf-8") as jf:
+        json.dump(json_ld_data, jf, indent=2, ensure_ascii=False)
+
+
+****************************************
+FILE: C:/Users/User/Desktop/SiteAudits\core\site_report.py
+****************************************
+# core/site_report.py
+
+import os
+from urllib.parse import urlparse
+from typing import List, Dict
+from core.meta_score import compute_sitewide_score
+
+SITES_DIR = "outputs/sites"
+
+def extract_path(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+        path = parsed.path.rstrip("/") or "/"
+        return path
+    except:
+        return "/"
+
+def write_combined_report(domain: str, page_reports: List[Dict]):
+    os.makedirs(SITES_DIR, exist_ok=True)
+    site_summary = compute_sitewide_score(page_reports)
+    report_path = os.path.join(SITES_DIR, f"{domain}.txt")
+
+    verify_json_score = 0
+    verify_html_score = 0
+    home_score = 0
+
+    for r in page_reports:
+        path = extract_path(r.get("url", "").lower())
+        score = r.get("backlink_score")
+        if score is None:
+            continue
+        if path in ["/verify", "/verify.html"]:
+            verify_html_score = score
+        elif path == "/verify.json":
+            verify_json_score = score
+        elif path == "/":
+            home_score = score
+
+    total_backlink_score = (
+        min(verify_html_score, 2) +
+        min(verify_json_score, 1) +
+        min(home_score, 1)
+    )
+
+    if total_backlink_score == 4:
+        backlink_grade = "🟢 Perfect"
+    elif total_backlink_score == 3:
+        backlink_grade = "✅ Good Standing"
+    elif total_backlink_score == 2:
+        backlink_grade = "⚠ Needs Work"
+    else:
+        backlink_grade = "❌ Not Eligible"
+
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(f"📡 SITE REPORT — {domain}\n")
+        f.write("=" * 50 + "\n\n")
+        f.write(f"Total Pages Audited: {site_summary['total_pages']}\n")
+        f.write(f"Pages Passed: {site_summary['pages_passed']}\n")
+        f.write(f"Pages Failed: {site_summary['pages_failed']}\n")
+        f.write(f"Average Score: {site_summary['average_score']}\n")
+        f.write(f"Mesh Health: {site_summary.get('average_alignment', 0)}% Alignment\n")
+        f.write(f"Structured Web Participation: {backlink_grade} ({total_backlink_score}/4)\n\n")
+
+        f.write("Participation Breakdown:\n")
+        f.write(f"- /verify.html or /verify: {verify_html_score}/2\n")
+        f.write(f"- /verify.json: {verify_json_score}/1\n")
+        f.write(f"- / (homepage): {home_score}/1\n\n")
+
+        f.write("Per-Page Scores:\n")
+        for i, score in enumerate(site_summary["page_scores"]):
+            f.write(f"- Page {i + 1}: {score}\n")
+
+        f.write("\n\n--- AUDIT SUMMARIES ---\n")
+        for i, report in enumerate(page_reports):
+            f.write(f"\n--- Page {i + 1} ---\n")
+            f.write(f"URL: {report.get('url', 'n/a')}\n")
+            f.write(f"Status: {report.get('status')}\n")
+            f.write(f"Load time: {report.get('load_time_ms', 'n/a')} ms\n")
+            f.write(f"Backlink required: {report.get('backlink_required', 'n/a')}\n")
+            f.write(f"Backlink found: {report.get('backlink_found', 'n/a')}\n")
+            f.write(f"Structured Data: {report.get('structured_data_present', False)}\n")
+            f.write(f"Alignment Score: {report.get('alignment_percent', 0)}%\n")
+            if isinstance(report.get("backlink_score"), int):
+                f.write(f"Backlink Score: {report['backlink_score']}/2 (per page max)\n")
+            f.write("Violations:\n")
+            if report.get("violations"):
+                for v in report["violations"]:
+                    f.write(f" - {v}\n")
+            else:
+                f.write("None ✅\n")
+
+            debug = report.get("debug_log", [])
+            if debug:
+                f.write("\n--- DEBUG LOG ---\n")
+                for line in debug:
+                    f.write(f"{line}\n")
+
+
+****************************************
+FILE: C:/Users/User/Desktop/SiteAudits\rules\performance.py
+****************************************
+# structuredweb_auditor/rules/performance.py
+
+import time
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urlparse
+
+USER_AGENT = "StructuredWebAuditor/1.0"
+
+def audit_performance(url: str, html_content: str) -> dict:
+    result = {
+        "load_time_ms": None,
+        "status": "PASS",
+        "violations": [],
+        "autoloaded_js": [],
+        "cookies_set": []
+    }
+
+    # 1. Measure load time
+    try:
+        headers = {"User-Agent": USER_AGENT}
+        start = time.perf_counter()
+        response = requests.get(url, headers=headers, timeout=10)
+        end = time.perf_counter()
+        result["load_time_ms"] = int((end - start) * 1000)
+    except Exception as e:
+        result["status"] = "FAIL"
+        result["violations"].append(f"Page load error: {str(e)}")
+        return result
+
+    # Homepage speed rule
+    parsed_url = urlparse(url)
+    is_homepage = parsed_url.path in ["/", ""]
+
+    if is_homepage and result["load_time_ms"] > 1000:
+        result["status"] = "FAIL"
+        result["violations"].append(f"Homepage load time exceeds 1 second: {result['load_time_ms']}ms")
+
+    # 2. Parse HTML for JS includes
+    soup = BeautifulSoup(html_content, "html.parser")
+    script_tags = soup.find_all("script", src=True)
+    for tag in script_tags:
+        src = tag["src"]
+        if not any(allowed in src for allowed in ["kworker", "durable", "edge"]):
+            result["autoloaded_js"].append(src)
+
+    if result["autoloaded_js"] and not is_homepage:
+        result["status"] = "FAIL"
+        result["violations"].append(f"Autoloaded JS found: {result['autoloaded_js']}")
+
+    # 3. Check cookies
+    jar = requests.cookies.RequestsCookieJar()
+    try:
+        resp = requests.get(url, headers=headers, cookies=jar)
+        if resp.cookies:
+            for c in resp.cookies:
+                result["cookies_set"].append(f"{c.name}={c.value}")
+    except:
+        pass
+
+    if result["cookies_set"] and not is_homepage:
+        result["status"] = "FAIL"
+        result["violations"].append("Autoloaded cookies set without user interaction")
+
+    return result
+
+
+****************************************
+FILE: C:/Users/User/Desktop/SiteAudits\rules\schema.py
+****************************************
+from urllib.parse import urlparse
+from bs4 import BeautifulSoup
+import json
+
+def audit_schema(url: str, html_content: str) -> dict:
+    result = {
+        "status": "PASS",
+        "violations": [],
+        "has_json_ld": False,
+        "has_microdata": False,
+        "json_ld_data": [],
+        "microdata_data": [],
+    }
+
+    parsed = urlparse(url)
+    path = parsed.path.lower()
+
+    if path.endswith(".json"):
+        try:
+            parsed_json = json.loads(html_content)
+            if isinstance(parsed_json, dict):
+                result["json_ld_data"] = [parsed_json]
+                result["has_json_ld"] = True
+            elif isinstance(parsed_json, list):
+                result["json_ld_data"] = parsed_json
+                result["has_json_ld"] = True
+            else:
+                result["status"] = "FAIL"
+                result["violations"].append("Unsupported JSON structure.")
+        except json.JSONDecodeError:
+            result["status"] = "FAIL"
+            result["violations"].append("Invalid JSON.")
+        return result
+
+    # Regular HTML structured data logic
+    soup = BeautifulSoup(html_content, "html.parser")
+    json_ld = []
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or "")
+            if isinstance(data, dict):
+                json_ld.append(data)
+            elif isinstance(data, list):
+                json_ld.extend(data)
+        except json.JSONDecodeError:
+            continue
+
+    result["has_json_ld"] = bool(json_ld)
+    result["json_ld_data"] = json_ld
+
+    if not json_ld:
+        result["status"] = "FAIL"
+        result["violations"].append("No JSON-LD structured data found.")
+
+    return result
+
+
+****************************************
+FILE: C:/Users/User/Desktop/SiteAudits\rules\semantic_alignment.py
+****************************************
+# structuredweb_auditor/rules/semantic_alignment.py
+
+import re
+from bs4 import BeautifulSoup
+from typing import List, Dict
+
+# Common and domain-specific noise terms to skip
+STOPWORDS = set([
+    "the", "and", "for", "with", "that", "this", "from", "are", "was", "were",
+    "has", "have", "had", "you", "your", "our", "but", "not", "any", "can",
+    "more", "all", "its", "out", "get", "how", "use", "see", "now", "new",
+    "we", "us", "they", "their", "them", "it", "on", "in", "by", "as", "an",
+    "of", "a", "to", "is", "or", "be", "at", "via", "if",
+
+    # AI Structured Web domain-specific noise
+    "structured", "web", "ai", "indexer", "resolver", "node", "mesh",
+    "verify", "dual", "layered", "handshake", "agent", "subnode", "compliance",
+    "claim", "license", "category", "link", "endpoint", "semantic", "trust"
+])
+
+
+def extract_keywords(text: str) -> List[str]:
+    words = re.findall(r"\b[a-zA-Z0-9]{3,}\b", text.lower())
+    return [word for word in words if word not in STOPWORDS]
+
+
+def extract_json_ld_keywords(json_ld_blocks: List[dict]) -> List[str]:
+    descriptions = []
+
+    def extract_desc(obj):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if "description" in k.lower() or "keywords" in k.lower():
+                    if isinstance(v, str):
+                        descriptions.append(v)
+                    elif isinstance(v, list):
+                        descriptions.extend([str(i) for i in v])
+                elif isinstance(v, (dict, list)):
+                    extract_desc(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                extract_desc(item)
+
+    for block in json_ld_blocks:
+        extract_desc(block)
+
+    return extract_keywords(" ".join(descriptions))
+
+
+def extract_microdata_keywords(microdata_items: List[dict]) -> List[str]:
+    desc_texts = []
+    for item in microdata_items:
+        props = item.get("props", {})
+        for key, val in props.items():
+            if "description" in key.lower() and isinstance(val, str):
+                desc_texts.append(val)
+    return extract_keywords(" ".join(desc_texts))
+
+
+def audit_semantic_alignment(
+    html: str,
+    json_ld_blocks: List[dict],
+    microdata_items: List[dict]
+) -> Dict:
+    soup = BeautifulSoup(html, "html.parser")
+    html_text = soup.get_text(separator=" ", strip=True)
+    html_keywords = set(extract_keywords(html_text))
+
+    json_keywords = set(extract_json_ld_keywords(json_ld_blocks))
+    micro_keywords = set(extract_microdata_keywords(microdata_items))
+
+    shared = json_keywords.intersection(html_keywords)
+    all_keywords = json_keywords.union(html_keywords)
+
+    alignment_percent = (
+        round(len(shared) / len(json_keywords) * 100, 2) if json_keywords else 0
+    )
+
+    return {
+        "alignment_percent": alignment_percent,
+        "shared_terms": sorted(list(shared)),
+        "missing_terms": sorted(list(json_keywords - html_keywords)),
+        "total_sd_terms": len(json_keywords)
+    }
+
+
+****************************************
+FILE: C:/Users/User/Desktop/SiteAudits\rules\trust.py
+****************************************
+from bs4 import BeautifulSoup
+from urllib.parse import urlparse
+import json
+
+REQUIRED_BACKLINK_URL = "https://structuredweb.org/verify"
+REQUIRED_PATHS = {"/", "/verify.html", "/verify.json", "/verify"}
+
+def find_backlink_in_json(obj) -> bool:
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k.lower() == "ispartof" and isinstance(v, dict):
+                if v.get("url", "").strip().lower() == REQUIRED_BACKLINK_URL:
+                    return True
+            if k.lower() == "sameas":
+                if isinstance(v, list):
+                    if REQUIRED_BACKLINK_URL in [str(item).strip().lower() for item in v]:
+                        return True
+            if isinstance(v, (dict, list)):
+                if find_backlink_in_json(v):
+                    return True
+            elif isinstance(v, str):
+                if v.strip().lower() == REQUIRED_BACKLINK_URL:
+                    return True
+    elif isinstance(obj, list):
+        for item in obj:
+            if find_backlink_in_json(item):
+                return True
+    return False
+
+def audit_backlink(url: str, html_content: str) -> dict:
+    parsed = urlparse(url)
+    path = (parsed.path or "/").rstrip("/") or "/"
+    is_verify_html = path in ["/verify", "/verify.html"]
+    is_verify_json = path == "/verify.json"
+    is_home = path == "/"
+
+    result = {
+        "status": "PASS",
+        "violations": [],
+        "required": path in REQUIRED_PATHS,
+        "backlink_found": False,
+        "html_backlink": False,
+        "sd_backlink": False,
+        "backlink_score": None
+    }
+
+    found_json = False
+    found_html = False
+
+    if is_verify_json:
+        try:
+            data = json.loads(html_content)
+            found_json = find_backlink_in_json(data)
+        except json.JSONDecodeError:
+            found_json = False
+        result["sd_backlink"] = found_json
+        if not found_json:
+            result["status"] = "FAIL"
+            result["violations"].append("Missing required isPartOf backlink in /verify.json structured data.")
+    else:
+        soup = BeautifulSoup(html_content, "html.parser")
+
+        # Check JSON-LD
+        for script in soup.find_all("script", type="application/ld+json"):
+            try:
+                data = json.loads(script.string or "")
+                if find_backlink_in_json(data):
+                    found_json = True
+                    break
+            except json.JSONDecodeError:
+                continue
+        result["sd_backlink"] = found_json
+
+        if path in REQUIRED_PATHS and not found_json:
+            result["status"] = "FAIL"
+            result["violations"].append(f"{path} is missing isPartOf backlink in structured data.")
+
+        # Strict visible HTML anchor check
+        if is_verify_html:
+            for tag in soup.find_all("a", href=True):
+                href = tag["href"].strip().lower()
+                text = tag.get_text(strip=True).lower()
+                if href == REQUIRED_BACKLINK_URL and "structuredweb.org/verify" in text:
+                    found_html = True
+                    break
+            result["html_backlink"] = found_html
+            if not found_html:
+                result["status"] = "FAIL"
+                result["violations"].append(f"{path} is missing visible HTML link to {REQUIRED_BACKLINK_URL}")
+
+    # Score logic
+    if path in REQUIRED_PATHS:
+        score = 0
+        if result["sd_backlink"]:
+            score += 1
+        if is_verify_html and result["html_backlink"]:
+            score += 1
+        result["backlink_score"] = score
+    else:
+        result["backlink_score"] = None
+
+    result["backlink_found"] = result["sd_backlink"] or result["html_backlink"]
+
+    # Verify.html must contain both
+    if is_verify_html and (not result["sd_backlink"] or not result["html_backlink"]):
+        result["status"] = "FAIL"
+        result["violations"].append(f"{path} must contain both structured data and visible HTML backlink.")
+
+    # Non-required routes skip backlink reporting
+    if path not in REQUIRED_PATHS:
+        result["violations"] = []
+
+    return result
+
+
+****************************************
+FILE: C:/Users/User/Desktop/SiteAudits\rules\zero_trust.py
+****************************************
+# structuredweb_auditor/rules/zero_trust.py
+
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urlparse
+
+EDGE_WHITELIST = ["kworker", "durable", "do.cloudflare"]
+USER_AGENT = "StructuredWebAuditor/1.0"
+
+def audit_zero_trust(url: str, html_content: str) -> dict:
+    debug_log = [f"🔍 Zero Trust Audit: {url}"]
+
+    result = {
+        "status": "PASS",
+        "violations": [],
+        "autoloaded_scripts": [],
+        "blocked_cookies": [],
+        "popup_detected": False,
+        "debug_log": debug_log
+    }
+
+    parsed = urlparse(url)
+    is_homepage = parsed.path in ["/", ""]
+
+    soup = BeautifulSoup(html_content, "html.parser")
+
+    # 1. Detect external scripts
+    script_tags = soup.find_all("script", src=True)
+    for tag in script_tags:
+        src = tag["src"]
+        if not any(allowed in src for allowed in EDGE_WHITELIST):
+            result["autoloaded_scripts"].append(src)
+
+    if result["autoloaded_scripts"]:
+        msg = f"✘ Autoloaded scripts found: {result['autoloaded_scripts']}"
+    else:
+        msg = "✓ No disallowed autoloaded JS"
+    print(msg)
+    debug_log.append(msg)
+
+    # 2. Check for cookies
+    try:
+        response = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=10)
+        if response.cookies:
+            for cookie in response.cookies:
+                cookie_str = f"{cookie.name}={cookie.value}"
+                result["blocked_cookies"].append(cookie_str)
+    except Exception as e:
+        msg = f"⚠️ Cookie check failed: {e}"
+        debug_log.append(msg)
+        print(msg)
+
+    if result["blocked_cookies"]:
+        msg = f"✘ Cookies set without user action: {result['blocked_cookies']}"
+    else:
+        msg = "✓ No cookies set by server"
+    print(msg)
+    debug_log.append(msg)
+
+    # 3. Look for overlays/popups
+    overlays = soup.select("[class*='popup'], [id*='popup'], [class*='overlay'], [id*='overlay']")
+    if overlays:
+        result["popup_detected"] = True
+        msg = "✘ Popup or overlay elements detected"
+    else:
+        msg = "✓ No popup or overlay detected"
+    print(msg)
+    debug_log.append(msg)
+
+    # 4. Enforcement (non-homepage only)
+    if not is_homepage:
+        if result["autoloaded_scripts"]:
+            result["status"] = "FAIL"
+            result["violations"].append(f"Autoloaded JS on non-homepage: {result['autoloaded_scripts']}")
+
+        if result["blocked_cookies"]:
+            result["status"] = "FAIL"
+            result["violations"].append("Cookies set without interaction")
+
+        if result["popup_detected"]:
+            result["status"] = "FAIL"
+            result["violations"].append("Popup or overlay detected on load")
+
+    status_msg = f"→ Page Status: {result['status']}"
+    print(status_msg)
+    debug_log.append(status_msg)
+
+    return result
+
+

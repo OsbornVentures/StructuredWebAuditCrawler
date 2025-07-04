@@ -1,0 +1,18 @@
+[project]
+name = "structuredweb-auditor"
+version = "1.0.0"
+description = "Zero-trust, strict-mode auditor for AI-ready websites"
+authors = [{ name = "Dekker Osborn", email = "info@bitsnbytes.ai" }]
+dependencies = [
+    "requests",
+    "beautifulsoup4"
+]
+requires-python = ">=3.8"
+readme = "README.md"
+
+[project.scripts]
+swa = "audit:main"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
