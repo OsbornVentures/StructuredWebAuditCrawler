@@ -57,7 +57,7 @@ Each page undergoes **5 integrated modules**:
 
 ### 2. Schema Audit  
 - Confirms valid JSON-LD presence.  
-- Parses microdata when available.  
+ - Parses microdata when available using `itemtype`/`itemprop` attributes.
 - Validates JSON structure for `.json` endpoints.  
 - Flags missing or invalid markup.
 
@@ -78,7 +78,8 @@ Each page undergoes **5 integrated modules**:
 ### 5. Semantic Alignment Audit  
 - Extracts keywords from visible text.  
 - Compares to extracted descriptions and keyword arrays in JSON-LD & microdata.  
-- Calculates a raw alignment score — % of structured keywords found in actual page content.  
+- Calculates a raw alignment score — % of structured keywords found in actual page content.
+- Structured keywords now include both JSON-LD and microdata terms.
 - Reports missing keywords to guide realignment.
 
 ---
