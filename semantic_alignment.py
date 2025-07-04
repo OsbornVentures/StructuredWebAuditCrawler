@@ -69,16 +69,16 @@ def audit_semantic_alignment(
     json_keywords = set(extract_json_ld_keywords(json_ld_blocks))
     micro_keywords = set(extract_microdata_keywords(microdata_items))
 
-    shared = json_keywords.intersection(html_keywords)
-    all_keywords = json_keywords.union(html_keywords)
+    sd_keywords = json_keywords.union(micro_keywords)
+    shared = sd_keywords.intersection(html_keywords)
 
     alignment_percent = (
-        round(len(shared) / len(json_keywords) * 100, 2) if json_keywords else 0
+        round(len(shared) / len(sd_keywords) * 100, 2) if sd_keywords else 0
     )
 
     return {
         "alignment_percent": alignment_percent,
         "shared_terms": sorted(list(shared)),
-        "missing_terms": sorted(list(json_keywords - html_keywords)),
-        "total_sd_terms": len(json_keywords)
+        "missing_terms": sorted(list(sd_keywords - html_keywords)),
+        "total_sd_terms": len(sd_keywords)
     }

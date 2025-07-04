@@ -48,8 +48,26 @@ def audit_schema(url: str, html_content: str) -> dict:
     result["has_json_ld"] = bool(json_ld)
     result["json_ld_data"] = json_ld
 
-    if not json_ld:
+    # Extract microdata using itemtype and itemprop attributes
+    micro_items = []
+    for scope in soup.select("[itemscope]"):
+        item = {
+            "type": scope.get("itemtype", ""),
+            "props": {},
+            "html": str(scope)
+        }
+        for prop in scope.find_all(attrs={"itemprop": True}, recursive=False):
+            key = prop.get("itemprop")
+            val = prop.get("content") or prop.get_text(strip=True)
+            item["props"][key] = val
+        if item["props"]:
+            micro_items.append(item)
+
+    result["has_microdata"] = bool(micro_items)
+    result["microdata_data"] = micro_items
+
+    if not json_ld and not micro_items:
         result["status"] = "FAIL"
-        result["violations"].append("No JSON-LD structured data found.")
+        result["violations"].append("No structured data found.")
 
     return result
